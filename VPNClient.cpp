@@ -108,15 +108,15 @@ SSL *setup_tls_client(const std::string &hostname, const std::string &ca_path) {
     return ssl;
 }
 
-int recv_virtual_ip(SSL *ssl) {
+std::string recv_virtual_ip(SSL *ssl) {
     char buf[BUFFER_SIZE];
     SSL_read(ssl, buf, BUFFER_SIZE);
-    int virtual_ip = static_cast<int>(strtol(buf, nullptr, 10));
-    printf("virtual ip: 192.168.53.%d/24\n", virtual_ip);
-    return virtual_ip;
+    //int virtual_ip = static_cast<int>(strtol(buf, nullptr, 10));
+    printf("virtual ip: %s\n", buf);
+    return buf;
 }
 
-int create_tun_device(int virtual_ip) {
+int create_tun_device(const std::string& virtual_ip, const std::string& allow_ip_cidr) {
     int tun_fd;
     struct ifreq ifr{};
     memset(&ifr, 0, sizeof(ifr));
@@ -145,7 +145,7 @@ int create_tun_device(int virtual_ip) {
     //将虚拟IP绑定到TUN设备上
     int err;
     //sprintf(cmd, "ifconfig tun%d 192.168.53.%d/24 up", tunId, virtual_ip);
-    sprintf(cmd, "ip addr add 192.168.53.%d/24 dev tun%d",virtual_ip,tunId);
+    sprintf(cmd, "ip addr add %s dev tun%d",virtual_ip.c_str(),tunId);
     err = system(cmd);
     if (err == -1) {
         printf("Set virtual ip failed! (%d: %s)\n", errno, strerror(errno));
@@ -159,7 +159,7 @@ int create_tun_device(int virtual_ip) {
     }
     //将发送给192.168.60.0/24的数据包交由TUN设备处理
     //sprintf(cmd, "route add -net 192.168.60.0/24 dev tun%d", tunId);
-    sprintf(cmd, "ip route add 192.168.60.0/24 dev tun%d", tunId);
+    sprintf(cmd, "ip route add %s dev tun%d", allow_ip_cidr.c_str(), tunId);
     err = system(cmd);
     if (err == -1) {
         printf("Set route failed! (%d: %s)\n", errno, strerror(errno));
@@ -168,10 +168,11 @@ int create_tun_device(int virtual_ip) {
     return tun_fd;
 }
 
-VPNClient::VPNClient(std::string server_ip, int server_port, std::string ca_path) {
+VPNClient::VPNClient(std::string server_ip, int server_port, std::string ca_path, std::string allow_ip_cidr) {
     this->server_addr = std::move(server_ip);
     this->server_port = server_port;
     this->ca_path = std::move(ca_path);
+    this->allow_ip_cidr = std::move(allow_ip_cidr);
 }
 
 void VPNClient::Connect() const {
@@ -190,10 +191,10 @@ void VPNClient::Connect() const {
         return;
     }
     // get virtual ip
-    int virtual_ip = recv_virtual_ip(ssl);
+    std::string virtual_ip = recv_virtual_ip(ssl);
 
     // create tun device
-    int tun_fd = create_tun_device(virtual_ip);
+    int tun_fd = create_tun_device(virtual_ip, this->allow_ip_cidr);
 
     // select
     char buf[BUFFER_SIZE];

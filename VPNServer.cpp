@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <arpa/inet.h>
+#include <netinet/ip.h>
 #include <netinet/in.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
@@ -19,20 +20,35 @@
 #include <shadow.h>
 
 #include <iostream>
+#include <sys/stat.h>
 
 #include "VPNServer.h"
 #include "utils.h"
 
 VPNServer::VPNServer(std::string bind_ip, int bind_port, std::string ca_path, std::string cert_path,
-                     std::string key_path) {
+                     std::string key_path, std::string virtual_ip_cidr) {
     this->bind_ip = std::move(bind_ip);
     this->bind_port = bind_port;
     this->ca_path = std::move(ca_path);
     this->cert_path = std::move(cert_path);
     this->key_path = std::move(key_path);
+    this->virtual_ip_cidr = std::move(virtual_ip_cidr);
 }
 
 VPNServer::~VPNServer() = default;
+
+std::vector<std::string> IPPool;
+pthread_mutex_t mutex;
+std::string allocIPAddr() {
+    pthread_mutex_lock(&mutex);
+    std::string ip;
+    if (!IPPool.empty()) {
+        ip = IPPool[0];
+        IPPool.erase(IPPool.begin());
+    }
+    pthread_mutex_unlock(&mutex);
+    return ip;
+}
 
 SSL_CTX *server_ssl_init(const char* CA_PATH, const char* CERT_PATH, const char* KEY_PATH) {
     SSL_CTX *ctx;
@@ -66,14 +82,14 @@ SSL_CTX *server_ssl_init(const char* CA_PATH, const char* CERT_PATH, const char*
     return ctx;
 }
 
-int setup_tcp_server(const std::string &bind_ip, int bind_port) {
+int VPNServer::setupTcpServer() {
     auto sa_server = (struct sockaddr_in*)malloc(sizeof(sockaddr_in));
     int listen_sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     CHK_ERR(listen_sock, "socket")
     memset(sa_server, '\0', sizeof(sockaddr_in));
     sa_server->sin_family = AF_INET;
-    inet_aton(bind_ip.c_str(), &(sa_server->sin_addr));
-    sa_server->sin_port = htons(bind_port);
+    inet_aton(this->bind_ip.c_str(), &(sa_server->sin_addr));
+    sa_server->sin_port = htons(this->bind_port);
     int err = bind(listen_sock, (struct sockaddr *) sa_server, sizeof(sockaddr_in));
     CHK_ERR(err, "bind")
     err = listen(listen_sock, 5);
@@ -131,108 +147,49 @@ struct param {
     const char* ca_path;
     const char*  cert_path;
     const char*  key_path;
+    int tun_fd;
 };
 
-pthread_mutex_t mutex;
+typedef struct thread_data{
+    char* pipe_file;
+    SSL *ssl;
+}listen_pipe_param;
 
-int create_tun_device(int* virtual_ip){
-    auto ifr = (struct ifreq *)malloc(sizeof(ifreq));
-    memset(ifr, 0, sizeof(ifreq));
-
-    ifr->ifr_flags = IFF_TUN | IFF_NO_PI;
-    //IFF_TUN:create a tun device
-    //IFF_NO_PI:Do not provide packet information
-
-    //create a tun device
-    //find a name. lock
-    pthread_mutex_lock(&mutex);
-    int tun_fd = open("/dev/net/tun", O_RDWR);
-    pthread_mutex_unlock(&mutex);
-    if (tun_fd == -1) {
-        fprintf(stderr,"error! open TUN failed! (%d: %s)\n", errno, strerror(errno));
-        return -1;
+void * listen_pipe(void* param)
+{
+    auto ptd = (listen_pipe_param*) param;
+    // ./pipe+ptd->pipe_file
+    std::string pipe_file_path = "./pipe/";
+    std::string pipe_file_name = ptd->pipe_file;
+    int pipe_fd = open((pipe_file_path + pipe_file_name).c_str(), O_RDONLY);
+    if (pipe_fd < 0) {
+        printf("open pipe file %s error\n", (pipe_file_path + pipe_file_name).c_str());
     }
-
-    //register device work-model
-    int ret = ioctl(tun_fd, TUNSETIFF, ifr);
-    if (ret == -1) {
-        fprintf(stderr,"error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
-        return -1;
-    }
-
-    //tun id
-    // int tunId = atoi(ifr.ifr_name+3);
-    int tunId = static_cast<int>(strtol(ifr->ifr_name+3, nullptr, 10));
-    if(tunId >= 127) {
-        fprintf(stderr,"error! exceed the maximum number of clients!\n");
-        return -1;
-    }
-
-    //client_virtual_ip=tunID+127,target_virtual_ip=tunID+1
-    char cmd[1024];
-    sprintf(cmd, "ip addr add 192.168.53.%d/24 dev tun%d",tunId+1,tunId);
-    //sprintf(cmd,"ifconfig tun%d 192.168.53.%d/24 up",tunId,tunId+1);
-    //route config
-    int err;
-    err = system(cmd);
-    if (err == -1) {
-        fprintf(stderr,"error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
-        return -1;
-    }
-    sprintf(cmd, "ip link set tun%d up",tunId);
-    err = system(cmd);
-    if (err == -1) {
-        fprintf(stderr,"error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
-        return -1;
-    }
-    //sprintf(cmd,"route add -host 192.168.53.%d tun%d",tunId+127,tunId); // target -> client route
-    sprintf(cmd, "ip route add 192.168.53.%d/32 dev tun%d",tunId+127,tunId);
-    err = system(cmd);
-    if (err == -1) {
-        fprintf(stderr,"error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
-        return -1;
-    }
-    err = system("sysctl net.ipv4.ip_forward=1");
-    if (err == -1) {
-        fprintf(stderr,"error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
-        return -1;
-    }
-
-    *virtual_ip = tunId + 127;   //client_virtual_ip
-    return tun_fd;
+    long len;
+    do {
+        char buff[BUFFER_SIZE];
+        bzero(buff, BUFFER_SIZE);
+        len = read(pipe_fd, buff, BUFFER_SIZE);
+        SSL_write(ptd->ssl, buff, static_cast<int>(len));
+    } while (len >= 0);
+    printf("%s read 0 byte. Close connection and remove file.\n", ptd->pipe_file);
+    remove(ptd->pipe_file);
+    return nullptr;
 }
 
-void select_tun(SSL* ssl, int sock_fd, int tun_fd){
-    char buf[BUFFER_SIZE];
+void listen_sock(SSL* ssl, int tunfd)
+{
     int len;
-    while(true){
-        fd_set read_fd;// bitmap
-        FD_ZERO(&read_fd);
-        FD_SET(sock_fd,&read_fd);
-        FD_SET(tun_fd,&read_fd);
-        select(FD_SETSIZE,&read_fd,nullptr,nullptr,nullptr);
-        // target -> client
-        if(FD_ISSET(tun_fd,&read_fd)){
-            memset(buf,0,strlen(buf));
-            len = static_cast<int>(read(tun_fd,buf,BUFFER_SIZE));
-            buf[len] = '\0';
-            SSL_write(ssl,buf,len);
+    do {
+        char buf[BUFFER_SIZE];
+        len = SSL_read(ssl, buf, sizeof(buf) - 1);
+        long size = write(tunfd, buf, len);
+        if (size < 0) {
+            break;
         }
-        // client -> target
-        if(FD_ISSET(sock_fd,&read_fd)){
-            memset(buf,0,strlen(buf));
-            len = SSL_read(ssl,buf,BUFFER_SIZE);
-            if(len==0){
-                fprintf(stderr,"the ssl socket close!\n");
-                return;
-            }
-            buf[len]='\0';
-            long err = write(tun_fd,buf,len);
-            if(err==-1){
-                fprintf(stderr,"error! write to tun device failed! (%d: %s)\n", errno, strerror(errno));
-            }
-        }
-    }
+        buf[len] = '\0';
+    } while (len > 0);
+    printf("SSL shutdown.\n");
 }
 
 void* process_connection(void *arg) {
@@ -248,39 +205,159 @@ void* process_connection(void *arg) {
         fprintf(stderr, "error! SSL_accept return fail error:%d!\n", err);
         perror("Error during SSL_accept");
         ERR_print_errors_fp(stderr);
-        goto error_exit;
     }
     fprintf(stdout, "SSL_accept success!\n");
 
-    int virtual_ip;
-    int tun_fd;
     // verify client
     if (verify(ssl)!=0) {
-        goto error_exit;
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        close(_param.client_sock);
+        return nullptr;
     }
-    // create tun device
-    tun_fd = create_tun_device(&virtual_ip);
-    if (tun_fd == -1) {
-        goto error_exit;
-    }
+
     // send virtual ip to client
-    char virtual_ip_str[16];
-    sprintf(virtual_ip_str, "%d", virtual_ip);
-    SSL_write(ssl, virtual_ip_str, static_cast<int>(strlen(virtual_ip_str)+1));
+    std::string virtual_ip = allocIPAddr();
+    SSL_write(ssl, virtual_ip.c_str(), static_cast<int>(virtual_ip.length())+1);
+    // virtual_ip去掉网络范围
+    virtual_ip = virtual_ip.substr(0, virtual_ip.find_last_of('/'));
 
     // start to transfer data
-    select_tun(ssl, _param.client_sock, tun_fd);
+    //select_tun(ssl, _param.client_sock, tun_fd);
+    auto lpp = (listen_pipe_param*)malloc(sizeof(listen_pipe_param));
+    lpp->ssl = ssl;
+    lpp->pipe_file = (char*)malloc(1024);
+    strcpy(lpp->pipe_file, virtual_ip.c_str());
+    std::string pipe_path = "./pipe/";
+    std::string pipe_file = lpp->pipe_file;
 
-    close(tun_fd);
-error_exit:
+
+    if (mkfifo((pipe_path+pipe_file).c_str(), 0666) == -1)
+    {
+        printf("[The IP %s is occupied.Choose another one.]", lpp->pipe_file);
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        close(_param.client_sock);
+        return nullptr;
+    }
+
+    pthread_t listen_pipe_thread;
+    // remote to client
+    pthread_create(&listen_pipe_thread, nullptr, listen_pipe, (void *)lpp);
+
+    // client to remote
+    listen_sock(ssl, _param.tun_fd);
+
     SSL_shutdown(ssl);
     SSL_free(ssl);
     close(_param.client_sock);
     return nullptr;
 }
 
+int VPNServer::setupTunDevice() {
+    auto ifr = (struct ifreq *)malloc(sizeof(ifreq));
+    memset(ifr, 0, sizeof(ifreq));
+    ifr->ifr_flags = IFF_TUN | IFF_NO_PI;
+    //IFF_TUN:create a tun device
+    //IFF_NO_PI:Do not provide packet information
+
+    //create a tun device
+    int tun_fd = open("/dev/net/tun", O_RDWR);
+    if (tun_fd == -1) {
+        fprintf(stderr,"error! open TUN failed! (%d: %s)\n", errno, strerror(errno));
+        return -1;
+    }
+
+    //register device work-model
+    int ret = ioctl(tun_fd, TUNSETIFF, ifr);
+    if (ret == -1) {
+        fprintf(stderr,"error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
+        return -1;
+    }
+
+    //tun id
+    // int tunId = atoi(ifr.ifr_name+3);
+    int tunId = static_cast<int>(strtol(ifr->ifr_name+3, nullptr, 10));
+    //    if(tunId >= 127) {
+    //        fprintf(stderr,"error! exceed the maximum number of clients!\n");
+    //        return -1;
+    //    }
+
+    //client_virtual_ip=tunID+127,target_virtual_ip=tunID+1
+    char cmd[1024];
+    sprintf(cmd, "ip addr add %s dev tun%d",get_ip_by_cidr(this->virtual_ip_cidr ,1).c_str(), tunId);
+    //sprintf(cmd,"ifconfig tun%d 192.168.53.%d/24 up",tunId,tunId+1);
+    //route config
+    int err;
+    err = system(cmd);
+    printf("%s\n", cmd);
+    if (err == -1) {
+        fprintf(stderr,"error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
+        return -1;
+    }
+    sprintf(cmd, "ip link set tun%d up",tunId);
+    err = system(cmd);
+    printf("%s\n", cmd);
+    if (err == -1) {
+        fprintf(stderr,"error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
+        return -1;
+    }
+    //sprintf(cmd,"route add -host 192.168.53.%d tun%d",tunId+127,tunId); // target -> client route
+    sprintf(cmd, "ip route add %s dev tun%d",this->virtual_ip_cidr.c_str(),tunId);
+    err = system(cmd);
+    printf("%s\n", cmd);
+    if (err == -1) {
+        fprintf(stderr,"error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
+        return -1;
+    }
+//    err = system("sysctl net.ipv4.ip_forward=1");
+//    if (err == -1) {
+//        fprintf(stderr,"error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
+//        return -1;
+//    }
+
+    return tun_fd;
+}
+
+[[noreturn]] void *listen_tun(void *_tun_fd) {
+    int tun_fd = *((int *)_tun_fd);
+    char buff[BUFFER_SIZE];
+    while (true) {
+        long len = read(tun_fd, buff, BUFFER_SIZE);
+        if (len > 19 && buff[0] == 0x45) {
+            auto ip_header = (struct iphdr *)buff;
+            char pipe_file[1024];
+            sprintf(pipe_file, "./pipe/%s", int_to_ip(ntohl(ip_header->daddr)).c_str());
+            int fd = open(pipe_file, O_WRONLY);
+            if (fd == -1) {
+                printf("[WARN] File %s is not exist.\n", pipe_file);
+            } else {
+                long size = write(fd, buff, len);
+                if (size == -1) {
+                    printf("[WARN] Write to pipe %s failed.\n", pipe_file);
+                }
+            }
+        }
+    }
+}
+
+void VPNServer::initIPPool() {
+    for(int i=2;;i++) {
+        std::string ip;
+        ip = get_ip_by_cidr(this->virtual_ip_cidr, i);
+        if (ip.empty())
+            break;
+        IPPool.push_back(ip);
+    }
+}
+
 [[noreturn]] void VPNServer::Listen() {
-    int listen_sock = setup_tcp_server(bind_ip, bind_port);
+    initIPPool();
+    int listen_sock = setupTcpServer();
+
+    int tun_fd = setupTunDevice();
+    pthread_t listen_tun_thread;
+    pthread_create(&listen_tun_thread, nullptr, listen_tun, (void *)&tun_fd);
 
     while (true) {
         int client_sock = accept_tcp_client(listen_sock);
@@ -293,6 +370,7 @@ error_exit:
         client_arg->ca_path = this->ca_path.c_str();
         client_arg->cert_path = this->cert_path.c_str();
         client_arg->key_path = this->key_path.c_str();
+        client_arg->tun_fd = tun_fd;
         pthread_t tid;
         int ret = pthread_create(&tid, nullptr, process_connection, (void *) client_arg);
         if (ret != 0) {

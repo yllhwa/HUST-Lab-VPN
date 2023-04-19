@@ -9,12 +9,13 @@
 
 class VPNClient {
 public:
-    VPNClient(std::string server_ip, int server_port, std::string ca_path);
+    VPNClient(std::string server_ip, int server_port, std::string ca_path, std::string allow_ip_cidr);
     void Connect() const;
 
     std::string server_addr;
     int server_port;
     std::string ca_path;
+    std::string allow_ip_cidr;
 };
 
 

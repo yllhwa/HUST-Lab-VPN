@@ -5,10 +5,11 @@
 #ifndef HUSTVPN_VPNSERVER_H
 #define HUSTVPN_VPNSERVER_H
 
+#include <vector>
 
 class VPNServer {
 public:
-    VPNServer(std::string bind_ip, int bind_port, std::string ca_path, std::string cert_path, std::string key_path);
+    VPNServer(std::string bind_ip, int bind_port, std::string ca_path, std::string cert_path, std::string key_path, std::string virtual_ip_cidr);
 
     [[noreturn]] void Listen();
 
@@ -20,6 +21,13 @@ private:
     std::string ca_path;
     std::string cert_path;
     std::string key_path;
+    std::string virtual_ip_cidr;
+
+    int setupTcpServer();
+
+    int setupTunDevice();
+
+    void initIPPool();
 };
 
 
