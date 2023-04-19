@@ -28,6 +28,8 @@ private:
     int setupTunDevice();
 
     void initIPPool();
+
+    void cleanPipes();
 };
 
 

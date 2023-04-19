@@ -89,7 +89,7 @@ SSL *setup_tls_client(const std::string &hostname, const std::string &ca_path) {
     SSL_load_error_strings();
     SSLeay_add_ssl_algorithms();
 
-    auto *meth = (SSL_METHOD *) SSLv23_client_method();
+    const SSL_METHOD *meth = SSLv23_client_method();
     SSL_CTX *ctx = SSL_CTX_new(meth);
     if (!ctx) {
         ERR_print_errors_fp(stderr);
@@ -141,25 +141,27 @@ int create_tun_device(const std::string& virtual_ip, const std::string& allow_ip
     //虚拟设备编号
     int tunId = static_cast<int>(strtol(ifr.ifr_name+3, nullptr, 10));
 
-    char cmd[60];
+    char cmd[BUFFER_SIZE];
     //将虚拟IP绑定到TUN设备上
     int err;
     //sprintf(cmd, "ifconfig tun%d 192.168.53.%d/24 up", tunId, virtual_ip);
-    sprintf(cmd, "ip addr add %s dev tun%d",virtual_ip.c_str(),tunId);
+    snprintf(cmd, BUFFER_SIZE, "ip addr add %s dev tun%d",virtual_ip.c_str(),tunId);
     err = system(cmd);
     if (err == -1) {
         printf("Set virtual ip failed! (%d: %s)\n", errno, strerror(errno));
         return -1;
     }
-    sprintf(cmd, "ip link set tun%d up",tunId);
+
+    snprintf(cmd, BUFFER_SIZE, "ip link set tun%d up",tunId);
     err = system(cmd);
     if (err == -1) {
         printf("Set virtual ip failed! (%d: %s)\n", errno, strerror(errno));
         return -1;
     }
+
     //将发送给192.168.60.0/24的数据包交由TUN设备处理
     //sprintf(cmd, "route add -net 192.168.60.0/24 dev tun%d", tunId);
-    sprintf(cmd, "ip route add %s dev tun%d", allow_ip_cidr.c_str(), tunId);
+    snprintf(cmd, BUFFER_SIZE, "ip route add %s dev tun%d", allow_ip_cidr.c_str(), tunId);
     err = system(cmd);
     if (err == -1) {
         printf("Set route failed! (%d: %s)\n", errno, strerror(errno));

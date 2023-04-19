@@ -60,3 +60,34 @@ std::string get_ip_by_cidr(const std::string& cidr, int index)
     }
     return int_to_ip(first_ip + index) + cidr.substr(cidr.find_last_of('/'), -1);
 }
+
+std::vector<std::string> IPPool;
+pthread_mutex_t mutex;
+
+std::string allocIPAddr() {
+    pthread_mutex_lock(&mutex);
+    std::string ip;
+    if (!IPPool.empty()) {
+        ip = IPPool[0];
+        IPPool.erase(IPPool.begin());
+    }
+    pthread_mutex_unlock(&mutex);
+    return ip;
+}
+
+std::string releaseIPAddr(const std::string &ip) {
+    pthread_mutex_lock(&mutex);
+    IPPool.push_back(ip);
+    pthread_mutex_unlock(&mutex);
+    return ip;
+}
+
+void init_ip_pool(const std::string& virtual_ip_cidr) {
+    for (int i = 2;; i++) {
+        std::string ip;
+        ip = get_ip_by_cidr(virtual_ip_cidr, i);
+        if (ip.empty())
+            break;
+        IPPool.push_back(ip);
+    }
+}
