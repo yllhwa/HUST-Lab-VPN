@@ -18,6 +18,23 @@ services:
                      tail -f /dev/null
                  "
 
+    VPN_Client2:
+      image: handsonsecurity/seed-ubuntu:large
+      container_name: client-10.9.0.6
+      tty: true
+      cap_add:
+        - ALL
+      devices:
+        - "/dev/net/tun:/dev/net/tun"
+      volumes:
+        - ./volumes:/volumes
+      networks:
+        net-10.9.0.0:
+          ipv4_address: 10.9.0.6
+      command: bash -c "
+        tail -f /dev/null
+        "
+
     Host1:
         image: handsonsecurity/seed-ubuntu:large
         container_name: host-192.168.60.5
