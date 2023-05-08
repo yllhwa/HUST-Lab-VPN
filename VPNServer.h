@@ -29,7 +29,7 @@ private:
 
     void initIPPool();
 
-    void cleanPipes();
+    static void cleanPipes();
 };
 
 
