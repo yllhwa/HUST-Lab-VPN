@@ -7,9 +7,9 @@ int main(int argc, char* argv[]) {
     parser.add<std::string>("mode", 'm', "mode(server/client)", true, "", cmdline::oneof<std::string>("server", "client", "ssh", "ftp"));
     parser.add<std::string>("server", 'h', "host", true);
     parser.add<int>("port", 'p', "port", false, 4433, cmdline::range(1, 65535));
-    parser.add<std::string>("ca", 'C', "ca path", false, "/tmp/certs/ca.crt");
-    parser.add<std::string>("cert", 'c', "cert path", false, "/tmp/certs/server.crt");
-    parser.add<std::string>("key", 'k', "key path", false, "/tmp/certs/server.key");
+    parser.add<std::string>("ca", 'C', "ca path", false, "certs/ca.crt");
+    parser.add<std::string>("cert", 'c', "cert path", false, "certs/server.crt");
+    parser.add<std::string>("key", 'k', "key path", false, "certs/server.key");
     parser.add<std::string>("virtual", 'v', "tun virtual ip CIDR", false, "192.168.53.0/24");
     parser.add<std::string>("allow", 'a', "allow pass ip CIDR", false, "192.168.60.0/24");
     parser.parse_check(argc, argv);
