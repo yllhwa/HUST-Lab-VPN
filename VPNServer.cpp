@@ -82,6 +82,7 @@ int VPNServer::setupTcpServer() {
     CHK_ERR(err, "bind")
     err = listen(listen_sock, 5);
     CHK_ERR(err, "listen")
+    free(sa_server);
     return listen_sock;
 }
 
@@ -139,7 +140,7 @@ struct param {
     int tun_fd;
 };
 
-typedef struct thread_data {
+typedef struct {
     char *pipe_file;
     SSL *ssl;
 } listen_pipe_param;
@@ -206,7 +207,7 @@ void *process_connection(void *arg) {
     // send virtual ip to client
     std::string virtual_ip = allocIPAddr();
     SSL_write(ssl, virtual_ip.c_str(), static_cast<int>(virtual_ip.length()) + 1);
-    // virtual_ip去掉网络范围
+    // virtual_ip 去掉网络范围
     std::string old_virtual_ip = virtual_ip;
     virtual_ip = virtual_ip.substr(0, virtual_ip.find_last_of('/'));
 
@@ -262,6 +263,7 @@ int VPNServer::setupTunDevice() {
     int ret = ioctl(tun_fd, TUNSETIFF, ifr);
     if (ret == -1) {
         fprintf(stderr, "error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
+        free(ifr);
         return -1;
     }
 
@@ -276,6 +278,7 @@ int VPNServer::setupTunDevice() {
     printf("%s\n", cmd);
     if (err == -1) {
         fprintf(stderr, "error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
+        free(ifr);
         return -1;
     }
 
@@ -284,6 +287,7 @@ int VPNServer::setupTunDevice() {
     printf("%s\n", cmd);
     if (err == -1) {
         fprintf(stderr, "error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
+        free(ifr);
         return -1;
     }
 
@@ -293,9 +297,11 @@ int VPNServer::setupTunDevice() {
     printf("%s\n", cmd);
     if (err == -1) {
         fprintf(stderr, "error! setup TUN interface by ioctl failed! (%d: %s)\n", errno, strerror(errno));
+        free(ifr);
         return -1;
     }
 
+    free(ifr);
     return tun_fd;
 }
 
