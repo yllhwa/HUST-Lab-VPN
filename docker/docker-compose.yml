@@ -14,9 +14,12 @@ services:
         networks:
             net-10.9.0.0:
                 ipv4_address: 10.9.0.5
+        extra_hosts:
+                - "hustcse.yllhwa.com:10.9.0.11"
         command: bash -c "
                      tail -f /dev/null
                  "
+        
 
     VPN_Client2:
       image: handsonsecurity/seed-ubuntu:large
@@ -31,9 +34,12 @@ services:
       networks:
         net-10.9.0.0:
           ipv4_address: 10.9.0.6
+      extra_hosts:
+            - "hustcse.yllhwa.com:10.9.0.11"
       command: bash -c "
         tail -f /dev/null
         "
+    
 
     Host1:
         image: handsonsecurity/seed-ubuntu:large
